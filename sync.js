@@ -1,34 +1,60 @@
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
-// 这些变量会从 GitHub 的“保险箱”里读取
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 async function run() {
+    console.log("🚀 正在启动备用同步方案...");
     try {
-        console.log("正在获取数据...");
-        // 请求一个无需复杂验证的镜像接口
-        const res = await axios.get('https://mcree.top/api/lottery/ssq/latest');
-        const data = res.data.data;
+        // 换用一个更稳定的公共彩票接口镜像
+        const res = await axios.get('https://m.789789.tv/api/lottery/draw-list?lotteryType=1', {
+            timeout: 10000
+        });
+
+        if (!res.data || !res.data.data) {
+            throw new Error("接口返回格式不正确");
+        }
+
+        const latest = res.data.data[0];
+        console.log(`📡 抓取成功！期号: ${latest.issue}`);
 
         const drawData = {
-            issue_no: data.issue,
-            draw_reds: data.red.split(',').map(Number),
-            draw_blue: Number(data.blue),
-            draw_date: data.drawTime
+            issue_no: latest.issue,
+            draw_reds: latest.red.split(',').map(Number),
+            draw_blue: Number(latest.blue),
+            draw_date: latest.drawTime
         };
 
-        console.log(`拿到数据了：第 ${drawData.issue_no} 期`);
+        console.log(`📊 解析号码: 红球[${drawData.draw_reds}] 蓝球[${drawData.draw_blue}]`);
 
         const { error } = await supabase
             .from('draw_history')
             .upsert([drawData], { onConflict: 'issue_no' });
 
         if (error) throw error;
-        console.log('✅ 数据库更新成功！');
+        console.log('✅ 数据库同步成功！');
+
     } catch (err) {
-        console.error('❌ 出错了:', err.message);
-        process.exit(1);
+        console.error('❌ 同步失败:', err.message);
+        // 如果第一个也失败，尝试最后一个兜底方案：福彩官网 API 的一种特殊写法
+        console.log("尝试最后一种兜底手段...");
+        try {
+            const backup = await axios.get('http://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawDetails?name=ssq&issueCount=1', {
+                headers: { 'Referer': 'http://www.cwl.gov.cn/' }
+            });
+            const bData = backup.data.result[0];
+            const drawData = {
+                issue_no: bData.code,
+                draw_reds: bData.red.split(',').map(Number),
+                draw_blue: Number(bData.blue),
+                draw_date: bData.date
+            };
+            await supabase.from('draw_history').upsert([drawData], { onConflict: 'issue_no' });
+            console.log('✅ 兜底同步成功！');
+        } catch (bErr) {
+            console.error('💀 所有接口均失效，请检查网络或稍后再试。');
+            process.exit(1);
+        }
     }
 }
 run();
